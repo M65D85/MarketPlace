@@ -1,20 +1,19 @@
-pragma solidity ^0.4.17;
-import "./Network.sol";
+pragma solidity ^0.4.19;
 
 contract MarketPlace {
 
-  Network networkIns = new Network();
-  enum status{FUNDED, RELEASED}
+  Escrow escrow;
 
 //Has all the information of a particular product
   struct Product {
     string itemName;
     string color;
     string description;
-    string warranty;
     string manufacturer;
+    uint warranty;
     uint quantity;
     uint price;
+    uint productID;
     bool inStock;
     address oneSeller;
   }
@@ -26,12 +25,11 @@ contract MarketPlace {
     string sellerPhoneNumber;
     string sellerEmail;
     uint noOfProducts;
-    mapping(uint => Product) products;
+    mapping(uint => Product) sellerProducts;
   }
 
-
   event AddedSeller(address seller, string sellerName, string sellerPhoneNumber, string sellerEmail);
-  event AddedItem(address seller, string itemName, string color, string description, string warranty, string manufacturer, uint price, uint quantity);
+  event AddedItem(address seller, string itemName, string color, string description, string manufacturer, uint warranty, uint price, uint quantity);
 
 //This is an array of Seller struct. Can iterate through the number of sellers that have registered and get their information.
 //This is an array of Product struct. Can iterate through the number of products that are there in the marketplace. Used an array here to retrieve the products to the marketplace to display them to users.
@@ -45,17 +43,19 @@ contract MarketPlace {
   Product[] public productsArray;
 
   address public owner;
-
   address[] public sellersAdd;
-  uint[] public transactionID;
+
+  bytes32[] public txHash;
 
   mapping(address => Seller) public sellers;
+  mapping(address => mapping(uint => Product)) public products;
   mapping(address => bool) public isSeller;
 
 
 //Constructor function.
-  function MarketPlace() public {
+  constructor(address _escrowAdd) public {
     owner = msg.sender;
+    escrow = Escrow(_escrowAdd);
   }
 
 //Function to add a seller.
@@ -91,7 +91,7 @@ contract MarketPlace {
 //The new product is added to the mapping using itemNo as mapping key(uint) which is later incremented to make room for next product
 //noOfProducts is now incremented for when the next product is to be entered
 /*Thew new product is also pushed to an array of products call productsArray. Please see that I used arrays here as well on top of mappings just so that I could iterate through the values without having to have any knowledge of mapping keys.*/
-  function addItem(string _itemName, string _color, string _description, string _warranty, string _manufacturer, uint _price, uint _quantity) public {
+  function addItem(string _itemName, string _color, string _description, string _manufacturer, uint _warranty, uint _price, uint _productID, uint _quantity) public {
     require(isSeller[msg.sender]);
 
     Product memory newProduct = Product({
@@ -101,16 +101,18 @@ contract MarketPlace {
       warranty: _warranty,
       manufacturer: _manufacturer,
       price: _price,
+      productID: _productID,
       quantity: _quantity,
       inStock: true,
       oneSeller: msg.sender
     });
 
     uint itemNo = sellers[msg.sender].noOfProducts;
-    sellers[msg.sender].products[itemNo] = newProduct;
+    sellers[msg.sender].sellerProducts[itemNo] = newProduct;
     sellers[msg.sender].noOfProducts++;
     productsArray.push(newProduct);
-    emit AddedItem(msg.sender, _itemName, _color, _description, _warranty, _manufacturer, _price, _quantity);
+    products[msg.sender][newProduct.productID] = newProduct;
+    emit AddedItem(msg.sender, _itemName, _color, _description, _manufacturer, _warranty, _price, _quantity);
   }
 
 //Function to get sellers count.
@@ -123,9 +125,9 @@ contract MarketPlace {
     return productsArray.length;
   }
 
-/*Function for buying an item. THIS WAS JUST A SIMPLE FUNCTION I MADE TO KIND OF GET AN IDEA HOW IT WOULD WORK.*/
+//Function for buying an item.
 //Getting the specific product information. This can be done through react.js
-/* Pulling up seller details also. Seller struct is not used much over here but I believe we may need it when doing some error checking and things like that. For now i just added it here. Only place it is used in this function is for when we are transfering money to the seller address.*/
+//Pulling up seller details also. Seller struct is not used much over here but I believe we may need it when doing some error checking and things like that.
 //Used to create a Unique ID for the paymentdetails mapping.
 //This is where all the payment details are created. Note I did not add all the required values here. All required fields can be added later.
 //New payment info is added to the mapping. With unique ID as mapping key(like you mentioned)
@@ -133,24 +135,20 @@ contract MarketPlace {
 //Unique ID is then incremented. We can figure out a way to generate proper Unique IDs for this case. This was just a mockup.
 //Amount is transferred to selleraddress. If fails, function throws. This can be redone to do better error handling. If it goes throgh, we then decrease the quantity.
 //Check to see if there is enough quantity of other buyers.
-  function buyItem(uint _no) public payable {
-    Product storage productIndex = productsArray[_no];
-    Seller storage productSeller = sellers[productIndex.oneSeller];
-    address buyer = msg.sender;
-    address seller = productSeller.sellerAddress;
-    uint amount = msg.value;
-    bytes32 uid;
-    address[] signatures;
-    signatures[0] = buyer;
-    signatures[1] = seller;
-
+  function buyItem(address _seller, uint _no, address[] _sigs) public payable {
+    Product storage productIndex = products[_seller][_no];
     require(msg.sender != 0);
-    require(msg.sender != productSeller.sellerAddress);
+    require(msg.sender != productIndex.oneSeller, "Buyer address is same as Seller Address");
     require(msg.value >= productIndex.price);
     require(productIndex.inStock);
+    bytes32 transactionHash = keccak256(abi.encodePacked(msg.sender, productIndex.oneSeller, _sigs, msg.value));
+    txHash.push(transactionHash);
 
-    networkIns.createTransaction(buyer, seller, uid, signatures, amount);
+    escrow.createTransaction.value(msg.value)(msg.sender, productIndex.oneSeller, transactionHash, _sigs, productIndex.productID, msg.value);
     productIndex.quantity--;
+  }
 
+  function getMarketAccountBal() public view returns(uint) {
+    return address(this).balance;
   }
 }
